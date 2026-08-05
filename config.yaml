@@ -1,0 +1,51 @@
+# 澳门一户通 · 奥林匹克运动场 三号羽毛球场 抢场配置
+# 所有敏感信息放在 .env，不写在这里
+
+timezone: Asia/Macau
+
+account:
+  login_url: "https://www.mo.gov.mo/home"
+  # 登录授权入口（来自你自己的 HAR）：未登录时被 302 到登录表单，已登录时直接回跳首页
+  authorize_url: "https://account.gov.mo/o/authorize/?client_id=OrCGrHL1ZLAF5dEU5eSVxXTvmw6nxzYNF0SmBsX0&grant_type=code&redirect_uri=https%3A%2F%2Fwww.mo.gov.mo%2Fhome%3FaccountType%3DPersonal&response_type=code"
+
+venue:
+  name: "奧林匹克體育中心 – 羽毛球場 – 羽毛球"
+  venue_id: 255                 # venue.mo.gov.mo 场馆 id（来自 HAR）
+  venue_code: "IDV0010S0001"    # 场馆 code，用于 POST /id/applications/
+  area_code: "1002"             # 场馆列表区域码（氹仔，来自 HAR）
+  place_id: "66631da8-6ba1-b101-0040-3910435058de"  # 三号羽毛球场 placeId（来自 HAR，集成时需再确认是否恒定）
+  booking_venue_id: "66631acd-6ba1-b101-0040-39005dcae507"   # booking.sport.gov.mo 场馆 id（place/list 参数）
+  booking_sport_id: "6560f1c9-9580-2001-0003-ecd27544b7d6"   # booking.sport.gov.mo 羽毛球 sportId
+  sport: 1
+
+booking:
+  release_time: "08:00:00"      # 放场时间（提前 offset_days 天的早上 8 点）
+  offset_days: 3                # 提前 3 天放场
+  time_key: "0700"              # 目标场次 07:00-08:00（timeKey 来自 HAR）
+  time_label: "07:00-08:00"
+  day_of_week: -1               # 目标星期过滤，-1=不限制；0=周一 … 6=周日
+
+payment:
+  way: "Boc"                    # 中银智慧付（含 MPay 扫码）
+  manual: true                  # 抢到后手动扫码支付，脚本只展示二维码并通知
+  poll_interval: 2.0            # 支付状态轮询间隔（秒）
+
+captcha:
+  mode: "manual"                # manual=下单时浏览器里手动拖腾讯滑块；auto=预留（未实现）
+
+sms:
+  mode: "manual"                # manual=手动输入；imessage=读取 Mac 信息 App 短信（预留）
+  timeout_seconds: 120
+  sender_pattern: ""            # 验证码短信来源过滤（号码/名称片段），留空不过滤
+
+notify:
+  sound: true                   # 用 macOS say 语音播报
+  app_notification: true        # 系统通知
+
+browser:
+  headless: false               # 集成调试阶段务必保持 false
+  user_data_dir: "state/chrome-profile"
+
+# 页面选择器：集成阶段通过 `python main.py discover` 发现后填到这里，
+# 键名约定见 README「集成清单」。
+selectors: {}
