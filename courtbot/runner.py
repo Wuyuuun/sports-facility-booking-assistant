@@ -613,8 +613,6 @@ class Runner:
         log.warning(msg)
 
     def _extract_order_id(self, body: str) -> str:
-        import json
-
         try:
             data = json.loads(body)
         except ValueError:

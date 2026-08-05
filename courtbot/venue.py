@@ -40,19 +40,6 @@ class VenueClient:
             except Exception:  # noqa: BLE001
                 pass
 
-    def find_venue(self, venue_code: str, area_code: str = "1002") -> dict:
-        r = self.s.get(
-            f"{VENUE_API}/venues/",
-            params={"pageNum": 1, "pageSize": 50, "areaCode": area_code},
-            timeout=20,
-        )
-        r.raise_for_status()
-        items = r.json().get("data", {}).get("list", [])
-        for v in items:
-            if v.get("code") == venue_code:
-                return v
-        raise LookupError(f"在区域 {area_code} 中未找到场馆 {venue_code}")
-
     def get_booking_uri(self, venue_code: str) -> str:
         """POST applications/{code} 返回带 apicode 的 booking.sport.gov.mo 跳转 URI。"""
         last = None
