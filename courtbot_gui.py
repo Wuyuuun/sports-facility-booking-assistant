@@ -22,6 +22,8 @@ PY = os.path.join(ROOT, ".venv", "bin", "python")
 MAIN = os.path.join(ROOT, "main.py")
 SELECTION_FILE = os.path.join(ROOT, "state", "selection.json")
 PAY_URL_RE = re.compile(r"https://aas\.bocmacau\.com[^\s\"']*")
+GUI_STATE_FILE = os.path.join(ROOT, "state", "gui.json")
+SERVER = None
 
 
 PAGE = """<!doctype html>
@@ -58,6 +60,7 @@ PAGE = """<!doctype html>
   <button class="danger" onclick="run('cancel')">取消订单</button>
   <button class="gray" onclick="stop()">停止</button>
   <button class="green" id="paybtn" onclick="openPay()" disabled>打开支付页</button>
+  <button class="gray" onclick="quit()">退出程序</button>
   <div id="status">就绪</div>
 </div>
 <div class="card"><div id="log">等待日志…</div></div>
@@ -94,12 +97,12 @@ async function saveSel() {
     timeText: document.getElementById('time').value});
   document.getElementById('sel').textContent = '当前选择：' + document.getElementById('place').value +
     '｜' + document.getElementById('day').value + '｜' + document.getElementById('time').value;
-  log('选择已保存\n');
+  log('选择已保存\\n');
 }
 
 async function run(cmd) {
   const r = await api('/api/run', 'POST', {cmd, day: document.getElementById('day').value});
-  if (!r.ok) log('已有任务运行中，请先点「停止」\n');
+  if (!r.ok) log('已有任务运行中，请先点「停止」\\n');
   document.getElementById('status').textContent = '运行中…';
 }
 async function stop() { await api('/api/stop', 'POST', {}); }
@@ -112,14 +115,25 @@ function log(t) {
   el.textContent += t;
   el.scrollTop = el.scrollHeight;
 }
+async function safeApi(url, method, body) {
+  try {
+    return await api(url, method, body);
+  } catch (e) {
+    log('请求失败：' + e + '\\n');
+    return {};
+  }
+}
 async function poll() {
-  const r = await api('/api/log?since=' + seq);
+  const r = await safeApi('/api/log?since=' + seq);
   seq = r.seq;
   (r.lines||[]).forEach(l => log(l));
-  const st = await api('/api/state');
+  const st = await safeApi('/api/state');
   document.getElementById('status').textContent = st.running ? '运行中…' : '就绪';
   document.getElementById('paybtn').disabled = !st.payUrl;
   setTimeout(poll, 600);
+}
+async function quit() {
+  if (confirm('确定退出抢票助手？')) { await safeApi('/api/quit', 'POST', {}); }
 }
 loadOptions();
 poll();
@@ -318,6 +332,10 @@ class Handler(BaseHTTPRequestHandler):
                 body.get("day", ""), body.get("placeTitle", ""), body.get("timeText", "")
             )
             self._json({"ok": ok})
+        elif u.path == "/api/quit":
+            self.backend.stop()
+            self._json({"ok": True})
+            threading.Timer(0.3, shutdown_server).start()
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -326,18 +344,54 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global SERVER
+    existing = _existing_instance()
+    if existing:
+        webbrowser.open(f"http://127.0.0.1:{existing}/")
+        print(f"抢票助手已在运行：http://127.0.0.1:{existing}/（直接打开页面）")
+        return
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     sock.close()
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    SERVER = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    os.makedirs(os.path.dirname(GUI_STATE_FILE), exist_ok=True)
+    with open(GUI_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump({"pid": os.getpid(), "port": port}, f)
     url = f"http://127.0.0.1:{port}/"
-    print(f"抢票助手已启动：{url}（关闭本终端即退出）")
+    print(f"抢票助手已启动：{url}")
     threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
-        server.serve_forever()
+        SERVER.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        try:
+            os.remove(GUI_STATE_FILE)
+        except Exception:
+            pass
+
+
+def _existing_instance() -> int | None:
+    """返回已在运行的实例端口（pid 存活校验），否则 None。"""
+    try:
+        data = json.load(open(GUI_STATE_FILE, encoding="utf-8"))
+        pid, port = data.get("pid"), data.get("port")
+        if pid and port:
+            os.kill(pid, 0)
+            return int(port)
+    except Exception:
+        pass
+    return None
+
+
+def shutdown_server() -> None:
+    if SERVER:
+        try:
+            SERVER.shutdown()
+        except Exception:
+            pass
+        os._exit(0)
 
 
 if __name__ == "__main__":
