@@ -228,8 +228,17 @@ class BrowserManager:
         opts.add_argument("--no-first-run")
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=opts)
+        try:
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=opts)
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "浏览器启动失败（%s）。若上次运行 keep_open=true 后未关闭浏览器，"
+                "请先关闭残留的 Chrome 窗口（占用 %s）再重试",
+                exc,
+                profile,
+            )
+            raise
         self.driver.set_window_size(1440, 960)
         captures_dir = self.cfg.state_dir / "captures"
         captures_dir.mkdir(parents=True, exist_ok=True)
@@ -247,6 +256,15 @@ class BrowserManager:
                     self._recorder.save_har("run")
                 except Exception:  # noqa: BLE001
                     log.debug("保存运行 HAR 失败", exc_info=True)
+            if self.cfg.browser.keep_open:
+                log.info(
+                    "keep_open=true：浏览器窗口保持打开。完成查看/支付后："
+                    "① 关闭浏览器窗口 ② 回到本终端按回车结束进程"
+                )
+                try:
+                    input()
+                except (EOFError, KeyboardInterrupt):
+                    pass
             try:
                 self.driver.quit()
             except Exception:  # noqa: BLE001

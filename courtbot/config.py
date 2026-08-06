@@ -75,6 +75,7 @@ class BrowserConfig:
     headless: bool = False
     user_data_dir: str = "state/chrome-profile"
     fresh_profile: bool = False
+    keep_open: bool = False  # 运行结束后保留浏览器窗口，人工关闭（避免支付二维码来不及看）
 
 
 @dataclass

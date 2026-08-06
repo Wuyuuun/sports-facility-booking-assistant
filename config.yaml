@@ -39,12 +39,13 @@ sms:
   sender_pattern: "+85366017814"  # 「體育局」验证码短信发送号码，按此过滤避免误读其他 6 位验证码
 
 notify:
-  sound: true                   # 用 macOS say 语音播报
+  sound: false                  # 语音播报已关闭（不再调用 macOS say）
   app_notification: true        # 系统通知
 
 browser:
   headless: false               # 集成调试阶段务必保持 false
   user_data_dir: "state/chrome-profile"
+  keep_open: true               # true=运行结束保留浏览器窗口，等人工在终端按回车才关闭（避免支付页被立刻关掉）
 
 # 页面选择器：集成阶段通过 `python main.py discover` 发现后填到这里，
 # 键名约定见 README「集成清单」。
