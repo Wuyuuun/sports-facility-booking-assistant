@@ -125,6 +125,15 @@ class BookingClient:
             name="payment_info",
         )
 
+    def check_status(self) -> dict:
+        """查询会员当前待处理订单：无则 code=0/data 为空；有则 data.number=订单号。"""
+        return self._call(
+            "GET",
+            "/member/check_status",
+            params={"webview": 0, "isReady": "false"},
+            name="check_status",
+        )
+
     def send_captcha(self, order_id: str) -> dict:
         """触发发送短信验证码（POST 无请求体）。"""
         return self._call(
@@ -132,6 +141,15 @@ class BookingClient:
             f"/booking/payment/send_captcha/{order_id}",
             params={"webview": 0},
             name="send_captcha",
+        )
+
+    def payment_cancel(self, order_id: str) -> dict:
+        """取消未付款订单（解除场地锁定）。"""
+        return self._call(
+            "POST",
+            f"/booking/payment/cancel/{order_id}",
+            params={"webview": 0},
+            name="payment_cancel",
         )
 
     def payment_start(self, order_id: str, request_id: str, way: str, code: str) -> dict:

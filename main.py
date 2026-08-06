@@ -32,6 +32,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_book = sub.add_parser("book", help="等待放场时间并抢场")
     p_book.add_argument("--dry-run", action="store_true", help="只等待放场并查询余量，不下单")
 
+    p_cancel = sub.add_parser("cancel", help="取消待付款订单（不传订单号则取消当前 Lock 订单）")
+    p_cancel.add_argument("order_id", nargs="?", default=None, help="订单号，如 IDOB260806160844S5R")
+
     sub.add_parser("choose", help="交互式选择场馆/日期/时段并保存")
     return ap
 
@@ -59,6 +62,8 @@ def main() -> int:
             runner.check(day=args.date)
         elif args.cmd == "book":
             runner.book(dry_run=args.dry_run)
+        elif args.cmd == "cancel":
+            runner.cancel_order(order_id=args.order_id)
         elif args.cmd == "choose":
             runner.choose()
         return 0

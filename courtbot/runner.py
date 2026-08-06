@@ -265,6 +265,39 @@ class Runner:
         self._print_availability(body)
         return body
 
+    def cancel_order(self, order_id: str | None = None) -> None:
+        """取消待付款订单；不传订单号则自动取消当前 Lock 的订单。"""
+        for attempt in range(2):
+            s = self.store.load()
+            if not s.is_valid():
+                with BrowserManager(self.cfg) as bm:
+                    recorder = bm.recorder()
+                    s = self.ensure_session(bm.driver, recorder, force=(attempt > 0))
+            client = BookingClient(s.api_key, response_dir=self.cfg.state_dir / "responses")
+            try:
+                target = order_id
+                if not target:
+                    data = client.check_status().get("data") or {}
+                    target = (data.get("number") or "").strip()
+                    if not target:
+                        log.info("当前没有待处理订单，无需取消")
+                        return
+                    log.info("检测到待处理订单: %s（status=%s）", target, data.get("status"))
+                resp = client.payment_cancel(target)
+                if resp.get("code") != 0:
+                    raise RuntimeError(
+                        f"取消订单失败（{target}）: {resp.get('message') or resp}"
+                    )
+                log.info("订单已取消: %s（%s）", target, resp.get("message"))
+                self.notifier.notify("订单已取消", f"{target} 已取消，场地锁定已解除")
+                return
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 401 and attempt == 0:
+                    log.warning("请求 401（会话失效），强制重建会话后重试")
+                    continue
+                raise
+        raise RuntimeError("取消订单失败：会话重建后仍 401")
+
     def _print_availability(self, body: dict) -> None:
         data = body.get("data") or {}
         place = (data.get("place") or {}).get("title", "?")

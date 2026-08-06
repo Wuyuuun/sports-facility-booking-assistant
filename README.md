@@ -33,6 +33,7 @@ python main.py choose           # 交互式选择 场地/日期/时段，保存�
 python main.py check            # 查询已选场地/日期的时段余量（--date 可指定日期）
 python main.py book --dry-run   # 放场前演练：等待放场时间 → 查余量，不下单
 python main.py book             # 真抢：提前运行，到点自动执行
+python main.py cancel [订单号]  # 取消待付款订单（不传订单号则自动取消当前 Lock 订单）
 ```
 
 辅助/调试命令：
