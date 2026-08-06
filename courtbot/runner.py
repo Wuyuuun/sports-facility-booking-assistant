@@ -20,7 +20,7 @@ from courtbot.notifier import Notifier
 from courtbot.payment import find_payment_url
 from courtbot.selection import Selection, SelectionStore
 from courtbot.session import Session, SessionStore
-from courtbot.sms import SmsContext, make_sms_provider
+from courtbot.sms import IMessageSmsProvider, SmsContext, make_sms_provider
 
 log = logging.getLogger("courtbot.runner")
 
@@ -118,6 +118,23 @@ class Runner:
                     last_err = exc
                     continue
                 raise
+            # 刚导航完时新 key 可能还未出现：稍等片刻，若有更新的 key 则改用并复核
+            time.sleep(3)
+            newer = recorder.find_api_key()
+            if newer and newer != key:
+                try:
+                    probe = BookingClient(newer)
+                    probe.place_list(
+                        self.cfg.venue.booking_venue_id, self.cfg.venue.booking_sport_id
+                    )
+                except requests.HTTPError as exc:
+                    if exc.response is not None and exc.response.status_code == 401:
+                        log.info("较新的 api-key 尚未生效，继续使用已验证的 key")
+                    else:
+                        raise
+                else:
+                    log.info("已改用最新 api-key（%s…）", newer[:24])
+                    key = newer
             log.info("api-key 校验通过（第 %d 次尝试）", i + 1)
             return key
         if isinstance(last_err, requests.HTTPError):
@@ -738,21 +755,30 @@ class Runner:
 
     def _payment_flow(self, client: BookingClient, driver, order_id: str) -> None:
         client.payment_info(order_id)
-        client.send_captcha(order_id)
-        self.notifier.notify("验证码已发送", "请查收手机短信")
 
         ctx = SmsContext(order_id=order_id, timeout_seconds=self.cfg.sms.timeout_seconds)
+        if isinstance(self.sms_provider, IMessageSmsProvider):
+            # 必须在发送验证码之前记录短信时间基线，读取时只接受更新的短信，避免读到旧码
+            ctx.newer_than = self.sms_provider.newest_ts()
+
+        captcha_resp = client.send_captcha(order_id)
+        self.notifier.notify("验证码已发送", "请查收手机短信")
         code = self.sms_provider.get_code(ctx)
 
-        import uuid
+        # requestId 必须用 send_captcha 返回的（与验证码配对），不能随机生成
+        request_id = ((captcha_resp.get("data") or {}).get("requestId") or "").strip()
+        if not request_id:
+            raise RuntimeError(
+                "send_captcha 响应中未找到 requestId，原始响应见 state/responses/"
+            )
 
         resp = client.payment_start(
             order_id,
-            request_id=uuid.uuid4().hex,
+            request_id=request_id,
             way=self.cfg.payment.way,
             code=code,
         )
-        pay_url = find_payment_url(resp)
+        pay_url = ((resp.get("data") or {}).get("paymentLink") or "").strip() or find_payment_url(resp)
         if not pay_url:
             log.warning(
                 "payment/start 响应中未找到 aas.bocmacau.com 支付 URL，原始响应见 state/responses/"

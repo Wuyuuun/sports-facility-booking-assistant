@@ -10,7 +10,7 @@
 - ✅ 场馆/场次查询跑通：`place/list`、`setting/init`、`open_time` 余量解析
 - ✅ 抢场点击对准真实页面：日期 → 场地 → 时段 → 勾选条款 → 「加入待付款清單」
 - ✅ 已实际走到支付页（订单创建、短信验证码、二维码页面均验证过）
-- ⚠️ 尚未确认：`order/add` 订单号字段、`payment/start` 支付 URL 字段、滑块是否每次必现、BOC 支付状态轮询
+- ✅ 已确认：`order/add` 订单号=`data.number`；`payment/start` 支付 URL=`data.paymentLink`；滑块在模板正常加载时必须拖动（不拖则 `trerror` 错误票据、不建单）；BOC 状态接口 `getOrderStatus.do` 可用（`ord_sts=U` 未支付）
 
 详细待办见 [docs/HANDOFF.md](docs/HANDOFF.md)（可直接迁移到新对话）。
 
