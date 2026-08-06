@@ -173,7 +173,8 @@ class Runner:
         log.info("目标日期: %s（%s）", day, day.strftime("%A"))
         return day.isoformat()
 
-    def _wait_until_release(self, day: str | None = None) -> None:
+    def _wait_until_release(self, day: str | None = None) -> bool:
+        """等待放场时间；返回是否真的等过（False=放场时间已过，直接开抢）。"""
         if day:
             tz = self._tz()
             hh, mm, ss = (int(x) for x in self.cfg.booking.release_time.split(":"))
@@ -185,13 +186,13 @@ class Runner:
             )
             if release <= datetime.now(tz):
                 log.warning("目标日期 %s 的放场时间已过，直接尝试抢场", day)
-                return
+                return False
             log.info("放场时间: %s", release.isoformat())
             while True:
                 now = datetime.now(tz)
                 if now >= release:
                     log.info("放场时间到")
-                    return
+                    return True
                 delta = (release - now).total_seconds()
                 if delta > 30:
                     time.sleep(5)
@@ -207,7 +208,7 @@ class Runner:
             now = datetime.now(self._tz())
             if now >= release:
                 log.info("放场时间到")
-                return
+                return True
             delta = (release - now).total_seconds()
             if delta > 30:
                 time.sleep(5)
@@ -317,7 +318,7 @@ class Runner:
                 s.api_key, response_dir=self.cfg.state_dir / "responses"
             )
 
-            self._wait_until_release(day)
+            waited = self._wait_until_release(day)
 
             if dry_run:
                 log.info("dry-run：仅查询余量，不下单")
@@ -336,10 +337,53 @@ class Runner:
                 self._print_availability(body)
                 return
 
+            # 提前预热页面等放场时：放场瞬间刷新页面，让目标日期进入可选范围
+            if waited:
+                self._refresh_booking_page(bm.driver, recorder, s, place_name, day)
+
             order_id = self._book_via_ui(bm.driver, recorder, day, place_name, time_label)
             log.info("订单号: %s", order_id)
             self.notifier.notify("抢场成功", f"订单 {order_id} 已创建，进入支付环节")
             self._payment_flow(client, bm.driver, order_id)
+
+    def _refresh_booking_page(
+        self, driver, recorder: FlowRecorder, s: Session, place_name: str, day: str
+    ) -> None:
+        """放场瞬间刷新预约页，使目标日期进入可选范围；失败则重新申请授权链接。
+
+        提前加载的页面 dayRanges 不含放场时新增的目标日期，必须刷新一次；
+        服务器放场可能有秒级延迟，目标日期没出现就重试刷新。
+        """
+        deadline = time.time() + 15
+        refreshed = False
+        while time.time() < deadline:
+            try:
+                recorder.start()
+                driver.refresh()
+                self._wait_for_booking_widget(driver, place_name, timeout=8)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("刷新后预约页未就绪（%s），重新申请授权链接", exc)
+                vc = venue.VenueClient(cookies=s.cookies, authorization=s.venue_token)
+                s.booking_uri = vc.get_booking_uri(self.cfg.venue.venue_code)
+                driver.get(s.booking_uri)
+                self._wait_for_booking_widget(driver, place_name, timeout=15)
+            try:
+                driver.find_element(
+                    By.XPATH,
+                    f"//*[contains(concat(' ', normalize-space(@class), ' '), ' date___3gbyJ ')"
+                    f" and normalize-space(text())='{day[5:]}']",
+                )
+                refreshed = True
+                break
+            except Exception:  # noqa: BLE001
+                log.info("目标日期 %s 尚未出现在日期栏，稍后重试刷新", day)
+                time.sleep(1.5)
+        if not refreshed:
+            log.warning("15 秒内目标日期未出现，继续尝试抢场（_click_date 仍会等待）")
+        # 刷新后 SPA 可能换了 api-key，重新捕获
+        s.api_key = self._capture_valid_api_key(recorder, attempts=3)
+        s.fetched_at = time.time()
+        self.store.save(s)
 
     def _book_via_ui(
         self, driver, recorder: FlowRecorder, day: str, place_name: str, time_label: str
@@ -361,7 +405,7 @@ class Runner:
             self._click_by_text(driver, sel["date"])
         else:
             self._click_date(driver, day)
-        time.sleep(0.3)
+        time.sleep(0.1)
 
         # 2) 选择三号场
         if sel.get("place"):
@@ -370,7 +414,7 @@ class Runner:
             self._click_first_text(
                 driver, [place_name, "羽毛球3號場", "羽毛球3号场"], "选择场地"
             )
-        time.sleep(0.3)
+        time.sleep(0.1)
 
         # 3) 选择 07:00-08:00 时段
         if sel.get("time_slot"):
@@ -389,7 +433,7 @@ class Runner:
                 raise RuntimeError(
                     f"选择时段失败：{time_label} 在页面未出现或不可选，已中止（避免无效提交）"
                 )
-        time.sleep(0.3)
+        time.sleep(0.1)
 
         # 3.5) 勾选“本人已閱讀並同意”条款（提交按钮启用前提）
         if not self._check_agreement(driver):
@@ -443,10 +487,10 @@ class Runner:
             )
         return self._extract_order_id(req.get("body", ""))
 
-    def _wait_for_booking_widget(self, driver, place_name: str) -> None:
+    def _wait_for_booking_widget(self, driver, place_name: str, timeout: float = 40.0) -> None:
         """等待预约小部件加载完成（出现目标场地文本）再开始点击。"""
         log.info("等待预约界面加载……")
-        WebDriverWait(driver, 40).until(
+        WebDriverWait(driver, timeout).until(
             EC.presence_of_element_located(
                 (By.XPATH, f"//*[contains(normalize-space(.), '{place_name}')]")
             )
