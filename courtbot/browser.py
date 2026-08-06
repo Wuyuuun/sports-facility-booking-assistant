@@ -97,6 +97,23 @@ class FlowRecorder:
         # 第一个 key 可能是已失效的，最新一个才是当前会话的。
         return key
 
+    def wait_for_api_key(self, url_pattern: str, timeout: float = 10.0) -> str:
+        """等待出现匹配 url_pattern 且带 api-key 的请求，返回该 key。
+
+        预约 SPA 加载完成后才会请求 place/list 等接口并携带新 apicode 的 key，
+        用它可避免先抓到旧页面残留的失效 key。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.drain()
+            for r in self._req.values():
+                if re.search(url_pattern, r["url"]):
+                    k = r["headers"].get("api-key") or r["headers"].get("Api-Key")
+                    if k:
+                        return k
+            time.sleep(0.2)
+        return ""
+
     def wait_request(self, url_pattern: str, timeout: float = 60.0) -> dict:
         """等待出现匹配 url_pattern 的请求，返回其 url/method/headers/postData/body。"""
         deadline = time.time() + timeout

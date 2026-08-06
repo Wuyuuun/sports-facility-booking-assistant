@@ -86,16 +86,15 @@ class Runner:
     def _capture_valid_api_key(self, recorder: FlowRecorder, attempts: int = 4) -> str:
         """捕获并实测校验 booking api-key。
 
-        浏览器可能先发出旧页面残留的请求（旧 apicode 对应的 key 直连会 401），
-        因此取最新出现的 key，并用 place/list 实测校验；401 则等待刷新后重取。
+        优先等新预约页面加载后才会发出的 place/list 请求的 key（对应新 apicode），
+        避免先抓到旧页面残留的 key 导致 401 重试（实测可省 5-7 秒）。
         """
         last_err: Exception | None = None
+        key = recorder.wait_for_api_key(r"/api/booking/place/list", timeout=6)
         for i in range(attempts):
-            if i:
-                time.sleep(3)
-            key = recorder.find_api_key()
             if not key:
-                time.sleep(2)
+                if i:
+                    time.sleep(2)
                 key = recorder.find_api_key()
             if not key:
                 last_err = RuntimeError(
@@ -116,25 +115,9 @@ class Runner:
                         attempts,
                     )
                     last_err = exc
+                    key = ""
                     continue
                 raise
-            # 刚导航完时新 key 可能还未出现：稍等片刻，若有更新的 key 则改用并复核
-            time.sleep(3)
-            newer = recorder.find_api_key()
-            if newer and newer != key:
-                try:
-                    probe = BookingClient(newer)
-                    probe.place_list(
-                        self.cfg.venue.booking_venue_id, self.cfg.venue.booking_sport_id
-                    )
-                except requests.HTTPError as exc:
-                    if exc.response is not None and exc.response.status_code == 401:
-                        log.info("较新的 api-key 尚未生效，继续使用已验证的 key")
-                    else:
-                        raise
-                else:
-                    log.info("已改用最新 api-key（%s…）", newer[:24])
-                    key = newer
             log.info("api-key 校验通过（第 %d 次尝试）", i + 1)
             return key
         if isinstance(last_err, requests.HTTPError):
