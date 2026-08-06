@@ -10,11 +10,11 @@ import json
 import os
 import re
 import signal
-import socket
 import subprocess
 import threading
 import time
 import webbrowser
+import fcntl
 from datetime import datetime, timedelta, time as dtime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -27,6 +27,7 @@ SELECTION_FILE = os.path.join(ROOT, "state", "selection.json")
 PAY_URL_RE = re.compile(r"https://aas\.bocmacau\.com[^\s\"']*")
 GUI_STATE_FILE = os.path.join(ROOT, "state", "gui.json")
 SCHEDULE_FILE = os.path.join(ROOT, "state", "schedule.json")
+PORT = 8765
 SERVER = None
 
 
@@ -87,13 +88,25 @@ async function loadOptions() {
   opts = await api('/api/options' + (d ? '?day=' + encodeURIComponent(d) : ''));
   fill(document.getElementById('day'), opts.dayRanges || []);
   fill(document.getElementById('place'), (opts.places||[]).map(p => p.title));
-  fill(document.getElementById('time'), (opts.times||[]).map(t => t.timeFrom + '-' + t.timeTo + (t.isCanBook ? '' : '（不可约）')));
+  const tsel = document.getElementById('time');
+  tsel.innerHTML = '';
+  (opts.times||[]).forEach(t => {
+    const o = document.createElement('option');
+    o.value = t.timeFrom + '-' + t.timeTo;
+    o.text = o.value + (t.isCanBook ? '' : '（不可约）');
+    tsel.appendChild(o);
+  });
+  if (!tsel.options.length) {
+    const o = document.createElement('option');
+    o.value = '07:00-08:00';
+    o.text = '07:00-08:00';
+    tsel.appendChild(o);
+  }
   const sel = opts.selection || {};
   if (sel.day) document.getElementById('day').value = sel.day;
   if (sel.place_name) document.getElementById('place').value = sel.place_name;
   if (sel.time_label) {
-    const t = document.getElementById('time');
-    [...t.options].forEach(o => { if (o.value.startsWith(sel.time_label)) t.value = o.value; });
+    [...tsel.options].forEach(o => { if (o.value.startsWith(sel.time_label)) tsel.value = o.value; });
   }
   document.getElementById('sel').textContent = '当前选择：' + (sel.place_name||'') + '｜' + (sel.day||'') + '｜' + (sel.time_label||'');
 }
@@ -256,7 +269,7 @@ class Backend:
 
             cfg = load_config(os.path.join(ROOT, "config.yaml"))
             place = next((p for p in self.last_options.get("places", []) if p["title"] == place_title), {})
-            time_text = time_text or cfg.booking.time_label
+            time_text = re.sub(r"（不可约）", "", time_text or "").strip() or cfg.booking.time_label
             tkey = next(
                 (t["timeKey"] for t in self.last_options.get("times", [])
                  if f"{t['timeFrom']}-{t['timeTo']}" in time_text),
@@ -344,8 +357,9 @@ def scheduler_loop(backend: Backend) -> None:
                 warm = timedelta(minutes=int(job.get("warm_minutes", 15)))
                 now = datetime.now(_tz())
                 if now >= release or now >= release - warm:
-                    job["started"] = True
-                    save_schedule(job)
+                    # 文件锁内认领任务，防止多个服务实例重复启动抢场
+                    if not _claim_job(job):
+                        continue
                     when = (
                         "放场时间已过，立即"
                         if now >= release
@@ -362,6 +376,27 @@ def scheduler_loop(backend: Backend) -> None:
         except Exception as exc:  # noqa: BLE001
             backend.append_log(f"[预定] 调度异常：{exc}\n")
         time.sleep(20)
+
+
+def _claim_job(job: dict) -> bool:
+    """在文件锁内把 schedule.json 标记为 started；返回是否由本次负责启动。"""
+    try:
+        with open(SCHEDULE_FILE, "r+", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                data = json.load(f)
+            except Exception:
+                data = {}
+            if data.get("started"):
+                return False
+            data["started"] = True
+            f.seek(0)
+            f.truncate()
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -466,20 +501,17 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     global SERVER
-    existing = _existing_instance()
-    if existing:
-        webbrowser.open(f"http://127.0.0.1:{existing}/")
-        print(f"抢票助手已在运行：http://127.0.0.1:{existing}/（直接打开页面）")
+    try:
+        SERVER = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    except OSError:
+        # 固定端口被占用 = 已有实例在运行，直接打开它的页面
+        webbrowser.open(f"http://127.0.0.1:{PORT}/")
+        print(f"抢票助手已在运行：http://127.0.0.1:{PORT}/")
         return
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
-    SERVER = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     os.makedirs(os.path.dirname(GUI_STATE_FILE), exist_ok=True)
     with open(GUI_STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump({"pid": os.getpid(), "port": port}, f)
-    url = f"http://127.0.0.1:{port}/"
+        json.dump({"pid": os.getpid(), "port": PORT}, f)
+    url = f"http://127.0.0.1:{PORT}/"
     print(f"抢票助手已启动：{url}")
     threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     threading.Thread(target=scheduler_loop, args=(Handler.backend,), daemon=True).start()
@@ -492,19 +524,6 @@ def main() -> None:
             os.remove(GUI_STATE_FILE)
         except Exception:
             pass
-
-
-def _existing_instance() -> int | None:
-    """返回已在运行的实例端口（pid 存活校验），否则 None。"""
-    try:
-        data = json.load(open(GUI_STATE_FILE, encoding="utf-8"))
-        pid, port = data.get("pid"), data.get("port")
-        if pid and port:
-            os.kill(pid, 0)
-            return int(port)
-    except Exception:
-        pass
-    return None
 
 
 def shutdown_server() -> None:

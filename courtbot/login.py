@@ -13,6 +13,14 @@ log = logging.getLogger("courtbot.login")
 LOGIN_LINK_TEXTS = ("登入", "登录", "登 录", "帳戶登入", "帳戶登錄")
 
 
+def _url(driver) -> str:
+    """current_url 在页面切换瞬间可能为 None，统一兜底为空串。"""
+    try:
+        return driver.current_url or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _click_login_link(driver) -> bool:
     for _ in range(6):
         try:
@@ -44,7 +52,7 @@ def _fill_and_submit(driver, cfg, wait) -> None:
     submit.click()
 
     wait.until(
-        lambda d: "mo.gov.mo" in d.current_url and "account.gov.mo" not in d.current_url
+        lambda d: "mo.gov.mo" in _url(d) and "account.gov.mo" not in _url(d)
     )
     log.info("登录成功")
 
@@ -62,12 +70,12 @@ def login(driver, cfg) -> None:
         log.info("打开 OAuth 授权入口: %s", cfg.account.authorize_url.split("?")[0])
         driver.get(cfg.account.authorize_url)
         wait.until(
-            lambda d: "account.gov.mo" in d.current_url or "mo.gov.mo" in d.current_url
+            lambda d: "account.gov.mo" in _url(d) or "mo.gov.mo" in _url(d)
         )
-        if "account.gov.mo" not in driver.current_url:
+        if "account.gov.mo" not in _url(driver):
             log.info("已登录（授权入口直接回跳），跳过登录")
             return
-        log.info("已进入登录页: %s", driver.current_url)
+        log.info("已进入登录页: %s", _url(driver))
         _fill_and_submit(driver, cfg, wait)
         return
 
@@ -76,22 +84,22 @@ def login(driver, cfg) -> None:
 
     try:
         wait.until(
-            lambda d: "mo.gov.mo" in d.current_url and d.current_url != "about:blank"
+            lambda d: "mo.gov.mo" in _url(d) and _url(d) != "about:blank"
         )
     except TimeoutException:
         pass
 
-    if "account.gov.mo" not in driver.current_url:
+    if "account.gov.mo" not in _url(driver):
         if not _click_login_link(driver):
             log.warning("没有找到“登入”入口，尝试直接访问登录页")
             driver.get("https://account.gov.mo/zh-hant/login")
 
     try:
-        wait.until(lambda d: "account.gov.mo" in d.current_url)
+        wait.until(lambda d: "account.gov.mo" in _url(d))
     except TimeoutException:
-        if "mo.gov.mo" in driver.current_url:
+        if "mo.gov.mo" in _url(driver):
             log.info("已在登录状态，跳过登录")
             return
         raise
-    log.info("已进入登录页: %s", driver.current_url)
+    log.info("已进入登录页: %s", _url(driver))
     _fill_and_submit(driver, cfg, wait)
