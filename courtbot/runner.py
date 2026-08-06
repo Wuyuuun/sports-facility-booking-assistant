@@ -373,14 +373,13 @@ class Runner:
             )
 
         self._wait_for_booking_widget(driver, place_name)
-        self._log_page_hints(driver)
         sel = self.cfg.selectors
         # 1) 选择目标日期
         if sel.get("date"):
             self._click_by_text(driver, sel["date"])
         else:
             self._click_date(driver, day)
-        time.sleep(1)
+        time.sleep(0.3)
 
         # 2) 选择三号场
         if sel.get("place"):
@@ -389,7 +388,7 @@ class Runner:
             self._click_first_text(
                 driver, [place_name, "羽毛球3號場", "羽毛球3号场"], "选择场地"
             )
-        time.sleep(1)
+        time.sleep(0.3)
 
         # 3) 选择 07:00-08:00 时段
         if sel.get("time_slot"):
@@ -408,7 +407,7 @@ class Runner:
                 raise RuntimeError(
                     f"选择时段失败：{time_label} 在页面未出现或不可选，已中止（避免无效提交）"
                 )
-        time.sleep(1)
+        time.sleep(0.3)
 
         # 3.5) 勾选“本人已閱讀並同意”条款（提交按钮启用前提）
         if not self._check_agreement(driver):
@@ -433,8 +432,13 @@ class Runner:
                 )
 
         captcha = CaptchaHandler(self.cfg)
-        # 提交后等 12 秒：若既没有下单请求也没有滑块，说明提交没生效，补点其他确认按钮
-        time.sleep(12)
+        # 提交后轮询等待下单信号：order/start 或滑块出现即继续；
+        # 6 秒内都没有，说明提交可能没生效，补点其他确认按钮。
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            if self._order_started(recorder) or self._captcha_shown(recorder):
+                break
+            time.sleep(0.3)
         if not self._order_started(recorder) and not self._captcha_shown(recorder):
             log.warning("提交后未触发下单，尝试点击其他确认按钮……")
             self._log_page_hints(driver)
@@ -487,11 +491,11 @@ class Runner:
                 By.XPATH,
                 "//*[self::a or self::button or self::div or self::span or self::li]"
                 "[not(self::script)][not(self::style)]",
-            )[:300]:
+            )[:120]:
                 t = (el.text or "").strip().replace("\n", " ")
                 if t and len(t) <= 30:
                     texts.append(t)
-            log.info("当前页面可点击文本: %s", " | ".join(dict.fromkeys(texts[:50])))
+            log.info("当前页面可点击文本: %s", " | ".join(dict.fromkeys(texts[:40])))
         except Exception:  # noqa: BLE001
             pass
 
@@ -680,12 +684,13 @@ class Runner:
         error=不可约。只点击非 stop 的项，点击后校验是否进入 select/脱离 stop。
         """
         start = time_label.split("-")[0]
-        variants = [time_label, time_label.replace("-", "~"), start]
+        # 页面实际渲染为波浪号分隔（07:00~08:00），优先匹配，避免先等超时
+        variants = [time_label.replace("-", "~"), time_label, start]
         deadline = time.time() + timeout
         while time.time() < deadline:
             for v in variants:
                 try:
-                    item = WebDriverWait(driver, 3).until(
+                    item = WebDriverWait(driver, 2).until(
                         EC.presence_of_element_located(
                             (
                                 By.XPATH,
