@@ -34,9 +34,9 @@ captcha:
   mode: "manual"                # manual=下单时浏览器里手动拖腾讯滑块；auto=预留（未实现）
 
 sms:
-  mode: "manual"                # manual=手动输入；imessage=读取 Mac 信息 App 短信（预留）
+  mode: "imessage"              # imessage=读取 Mac 信息 App 短信（已启用，需完全磁盘访问权限）
   timeout_seconds: 120
-  sender_pattern: ""            # 验证码短信来源过滤（号码/名称片段），留空不过滤
+  sender_pattern: "+85366017814"  # 「體育局」验证码短信发送号码，按此过滤避免误读其他 6 位验证码
 
 notify:
   sound: true                   # 用 macOS say 语音播报

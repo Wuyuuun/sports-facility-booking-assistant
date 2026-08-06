@@ -52,7 +52,7 @@ class IMessageSmsProvider:
             """
             SELECT m.text, m.date / 1000000000.0 + 978307200, h.id
             FROM message m
-            JOIN handle h ON m.handle_id = h.id
+            JOIN handle h ON m.handle_id = h.ROWID
             WHERE m.text IS NOT NULL
             ORDER BY m.date DESC
             LIMIT 50
