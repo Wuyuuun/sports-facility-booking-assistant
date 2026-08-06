@@ -31,6 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_book = sub.add_parser("book", help="等待放场时间并抢场")
     p_book.add_argument("--dry-run", action="store_true", help="只等待放场并查询余量，不下单")
+    p_book.add_argument("--rehearsal", action="store_true", help="演练：预热+等待放场+刷新+选中，不下单")
+    p_book.add_argument("--release", default=None, help="覆盖放场时间 HH:MM:SS（用于演练）")
+    p_book.add_argument("--day", default=None, help="指定目标日期 YYYY-MM-DD（默认用已保存选择）")
 
     p_cancel = sub.add_parser("cancel", help="取消待付款订单（不传订单号则取消当前 Lock 订单）")
     p_cancel.add_argument("order_id", nargs="?", default=None, help="订单号，如 IDOB260806160844S5R")
@@ -61,7 +64,9 @@ def main() -> int:
         elif args.cmd == "check":
             runner.check(day=args.date)
         elif args.cmd == "book":
-            runner.book(dry_run=args.dry_run)
+            if args.release:
+                cfg.booking.release_time = args.release
+            runner.book(dry_run=args.dry_run, rehearsal=args.rehearsal, day=args.day)
         elif args.cmd == "cancel":
             runner.cancel_order(order_id=args.order_id)
         elif args.cmd == "choose":

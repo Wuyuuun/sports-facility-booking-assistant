@@ -301,13 +301,13 @@ class Runner:
             )
 
     # ---------- 抢场 ----------
-    def book(self, dry_run: bool = False) -> None:
+    def book(self, dry_run: bool = False, rehearsal: bool = False, day: str | None = None) -> None:
         sel = self.selection_store.load()
         place_id = sel.place_id or self.cfg.venue.place_id
         place_name = sel.place_name or self.cfg.venue.name
         time_key = sel.time_key or self.cfg.booking.time_key
         time_label = sel.time_label or self.cfg.booking.time_label
-        day = sel.day or self.target_day()
+        day = day or sel.day or self.target_day()
         if sel.day:
             log.info("使用已保存选择: %s %s %s", place_name, day, time_label)
 
@@ -341,7 +341,12 @@ class Runner:
             if waited:
                 self._refresh_booking_page(bm.driver, recorder, s, place_name, day)
 
-            order_id = self._book_via_ui(bm.driver, recorder, day, place_name, time_label)
+            order_id = self._book_via_ui(
+                bm.driver, recorder, day, place_name, time_label, submit=not rehearsal
+            )
+            if rehearsal:
+                log.info("演练结束：日期/场地/时段/条款已选中，未创建订单")
+                return
             log.info("订单号: %s", order_id)
             self.notifier.notify("抢场成功", f"订单 {order_id} 已创建，进入支付环节")
             self._payment_flow(client, bm.driver, order_id)
@@ -386,7 +391,13 @@ class Runner:
         self.store.save(s)
 
     def _book_via_ui(
-        self, driver, recorder: FlowRecorder, day: str, place_name: str, time_label: str
+        self,
+        driver,
+        recorder: FlowRecorder,
+        day: str,
+        place_name: str,
+        time_label: str,
+        submit: bool = True,
     ) -> str:
         """通过浏览器 UI 完成：选日期/时间 → 提交 → 手动滑块 → 捕获 order/add。
 
@@ -442,7 +453,10 @@ class Runner:
             time.sleep(1)
             self._check_agreement(driver)
 
-        # 4) 提交（找不到按钮也没关系，用户可手动点，程序继续等待 order/add）
+        # 4) 提交（演练模式只选不提交）
+        if not submit:
+            log.info("演练模式：已选中日期/场地/时段/条款，未提交未下单")
+            return ""
         if sel.get("submit"):
             self._click_by_text(driver, sel["submit"])
         else:
