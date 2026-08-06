@@ -29,6 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_check = sub.add_parser("check", help="查询目标日期场次余量")
     p_check.add_argument("--date", default=None, help="指定日期 YYYY-MM-DD（默认取放场日+3天）")
 
+    p_options = sub.add_parser("options", help="输出可选日期/场地/时段 JSON（供 GUI 使用）")
+    p_options.add_argument("--day", default=None, help="指定日期 YYYY-MM-DD")
+
     p_book = sub.add_parser("book", help="等待放场时间并抢场")
     p_book.add_argument("--dry-run", action="store_true", help="只等待放场并查询余量，不下单")
     p_book.add_argument("--rehearsal", action="store_true", help="演练：预热+等待放场+刷新+选中，不下单")
@@ -63,6 +66,8 @@ def main() -> int:
             runner.snap()
         elif args.cmd == "check":
             runner.check(day=args.date)
+        elif args.cmd == "options":
+            runner.options(day=args.day)
         elif args.cmd == "book":
             if args.release:
                 cfg.booking.release_time = args.release

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 import re
 import time
 from datetime import datetime, time as dtime, timedelta
@@ -247,6 +248,69 @@ class Runner:
             body = client.open_time(place_id, day)
         self._print_availability(body)
         return body
+
+    def options(self, day: str | None = None) -> dict:
+        """输出 JSON 选项列表（供 GUI 使用）：日期范围、场地、时段、当前选择。"""
+        sel = self.selection_store.load()
+        for attempt in range(2):
+            s = self.store.load()
+            if not s.is_valid():
+                with BrowserManager(self.cfg) as bm:
+                    recorder = bm.recorder()
+                    s = self.ensure_session(bm.driver, recorder, force=(attempt > 0))
+            client = BookingClient(s.api_key, response_dir=self.cfg.state_dir / "responses")
+            try:
+                places = (
+                    (client.place_list(
+                        self.cfg.venue.booking_venue_id, self.cfg.venue.booking_sport_id
+                    ).get("data") or {}).get("placeList") or []
+                )
+                day_ranges = [
+                    d.get("day")
+                    for d in ((client.setting_init().get("data") or {}).get("dayRanges") or [])
+                ]
+                day = day or sel.day or (day_ranges[0] if day_ranges else self.target_day())
+                times = (
+                    (client.open_time(
+                        sel.place_id or self.cfg.venue.place_id, day
+                    ).get("data") or {}).get("openTimes") or []
+                )
+                break
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 401 and attempt == 0:
+                    log.warning("options 请求 401（会话失效），强制重建会话后重试")
+                    with BrowserManager(self.cfg) as bm:
+                        recorder = bm.recorder()
+                        self.ensure_session(bm.driver, recorder, force=True)
+                    continue
+                raise
+        else:
+            raise RuntimeError("options 失败：会话重建后仍 401")
+        out = {
+            "dayRanges": day_ranges,
+            "places": [
+                {"id": p.get("id"), "title": p.get("title")} for p in places
+            ],
+            "times": [
+                {
+                    "timeKey": t.get("timeKey"),
+                    "timeFrom": t.get("timeFrom"),
+                    "timeTo": t.get("timeTo"),
+                    "statusName": t.get("statusName"),
+                    "isCanBook": t.get("isCanBook"),
+                }
+                for t in times
+            ],
+            "selection": {
+                "place_id": sel.place_id,
+                "place_name": sel.place_name,
+                "day": sel.day,
+                "time_key": sel.time_key,
+                "time_label": sel.time_label,
+            },
+        }
+        print(json.dumps(out, ensure_ascii=False))
+        return out
 
     def cancel_order(self, order_id: str | None = None) -> None:
         """取消待付款订单；不传订单号则自动取消当前 Lock 的订单。"""
@@ -863,7 +927,12 @@ class Runner:
             )
             return
         log.info("打开支付页面: %s", pay_url.split("?")[0])
-        driver.get(pay_url)
+        if os.environ.get("COURTBOT_OPEN_IN_DEFAULT"):
+            import webbrowser
+
+            webbrowser.open(pay_url)
+        else:
+            driver.get(pay_url)
         self.notifier.notify("请扫码支付", "请用 MPay 扫描二维码完成支付")
 
         # TODO(集成): 确认 payment/start 返回的 BOC token 字段，再启用自动轮询
