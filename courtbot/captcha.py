@@ -21,6 +21,12 @@ class CaptchaHandler:
     def wait_order_add(self, recorder, timeout: float = 180.0) -> dict:
         log.info("请在弹出的浏览器中拖动滑块完成人机验证（如有）……")
         req = recorder.wait_request(r"/api/booking/order/add", timeout=timeout)
+        # 请求刚发出时响应体可能尚未被 CDP 捕获；等它到达再返回，
+        # 否则订单号提取会误报“响应不是 JSON”（订单其实已创建）。
+        deadline = time.time() + 15
+        while not req.get("body") and time.time() < deadline:
+            time.sleep(0.2)
+            req = recorder.find_response(r"/api/booking/order/add")
         log.info("已捕获 order/add 请求")
         return req
 
