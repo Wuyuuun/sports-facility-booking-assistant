@@ -43,6 +43,7 @@ class BookingConfig:
     time_key: str = "0700"
     time_label: str = "07:00-08:00"
     day_of_week: int = -1
+    extra_days: int = 2  # 日期列表在可预约范围外额外显示的天数（供「预定」尚未放场的日期）
 
 
 @dataclass

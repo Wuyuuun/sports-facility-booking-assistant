@@ -24,6 +24,7 @@ booking:
   time_key: "0700"              # 目标场次 07:00-08:00（timeKey 来自 HAR）
   time_label: "07:00-08:00"
   day_of_week: -1               # 目标星期过滤，-1=不限制；0=周一 … 6=周日
+  extra_days: 2                 # 日期列表额外显示的天数（供预定尚未放场的日期，如 08-10）
 
 payment:
   way: "Boc"                    # 中银智慧付（含 MPay 扫码）

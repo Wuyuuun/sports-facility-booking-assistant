@@ -269,6 +269,11 @@ class Runner:
                     d.get("day")
                     for d in ((client.setting_init().get("data") or {}).get("dayRanges") or [])
                 ]
+                # 可预约范围外追加未来几天（供「预定」尚未放场的日期）
+                if day_ranges:
+                    last_day = datetime.strptime(day_ranges[-1], "%Y-%m-%d").date()
+                    for i in range(1, int(self.cfg.booking.extra_days) + 1):
+                        day_ranges.append((last_day + timedelta(days=i)).isoformat())
                 day = day or sel.day or (day_ranges[0] if day_ranges else self.target_day())
                 times = (
                     (client.open_time(

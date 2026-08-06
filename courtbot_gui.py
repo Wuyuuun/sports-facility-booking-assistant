@@ -256,6 +256,7 @@ class Backend:
 
             cfg = load_config(os.path.join(ROOT, "config.yaml"))
             place = next((p for p in self.last_options.get("places", []) if p["title"] == place_title), {})
+            time_text = time_text or cfg.booking.time_label
             tkey = next(
                 (t["timeKey"] for t in self.last_options.get("times", [])
                  if f"{t['timeFrom']}-{t['timeTo']}" in time_text),
