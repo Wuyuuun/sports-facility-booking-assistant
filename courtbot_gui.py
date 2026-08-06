@@ -13,9 +13,12 @@ import signal
 import socket
 import subprocess
 import threading
+import time
 import webbrowser
+from datetime import datetime, timedelta, time as dtime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = os.path.join(ROOT, ".venv", "bin", "python")
@@ -23,6 +26,7 @@ MAIN = os.path.join(ROOT, "main.py")
 SELECTION_FILE = os.path.join(ROOT, "state", "selection.json")
 PAY_URL_RE = re.compile(r"https://aas\.bocmacau\.com[^\s\"']*")
 GUI_STATE_FILE = os.path.join(ROOT, "state", "gui.json")
+SCHEDULE_FILE = os.path.join(ROOT, "state", "schedule.json")
 SERVER = None
 
 
@@ -60,8 +64,11 @@ PAGE = """<!doctype html>
   <button class="danger" onclick="run('cancel')">取消订单</button>
   <button class="gray" onclick="stop()">停止</button>
   <button class="green" id="paybtn" onclick="openPay()" disabled>打开支付页</button>
+  <button class="primary" onclick="schedule()">预定</button>
+  <button class="gray" onclick="unschedule()">取消预定</button>
   <button class="gray" onclick="quit()">退出程序</button>
   <div id="status">就绪</div>
+  <div id="sched">未预定</div>
 </div>
 <div class="card"><div id="log">等待日志…</div></div>
 <script>
@@ -130,10 +137,23 @@ async function poll() {
   const st = await safeApi('/api/state');
   document.getElementById('status').textContent = st.running ? '运行中…' : '就绪';
   document.getElementById('paybtn').disabled = !st.payUrl;
+  const sch = st.schedule || {};
+  document.getElementById('sched').textContent = sch.day
+    ? ('预定：' + sch.day + '｜放场 ' + (sch.release||'').replace('T',' ') + '｜' + (sch.started ? '已自动启动' : (sch.start||'').replace('T',' ') + ' 自动启动'))
+    : '未预定';
   setTimeout(poll, 600);
 }
 async function quit() {
   if (confirm('确定退出抢票助手？')) { await safeApi('/api/quit', 'POST', {}); }
+}
+async function schedule() {
+  const day = document.getElementById('day').value;
+  const r = await safeApi('/api/schedule', 'POST', {day});
+  log(r.ok ? ('已预定：' + day + '（放场前自动真抢）\\n') : '预定失败\\n');
+}
+async function unschedule() {
+  await safeApi('/api/unschedule', 'POST', {});
+  log('已取消预定\\n');
 }
 loadOptions();
 poll();
@@ -264,6 +284,85 @@ class Backend:
             return False
 
 
+def _cfg():
+    from courtbot.config import load_config
+
+    return load_config(os.path.join(ROOT, "config.yaml"))
+
+
+def _tz() -> ZoneInfo:
+    return ZoneInfo(_cfg().timezone)
+
+
+def compute_release(day: str) -> datetime:
+    """目标日对应的放场时刻（目标日 - offset_days 的 release_time）。"""
+    cfg = _cfg()
+    hh, mm, ss = (int(x) for x in cfg.booking.release_time.split(":"))
+    target = datetime.strptime(day, "%Y-%m-%d").date()
+    return datetime.combine(
+        target - timedelta(days=cfg.booking.offset_days),
+        dtime(hh, mm, ss),
+        tzinfo=_tz(),
+    )
+
+
+def load_schedule() -> dict | None:
+    try:
+        return json.load(open(SCHEDULE_FILE, encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def save_schedule(data: dict) -> None:
+    os.makedirs(os.path.dirname(SCHEDULE_FILE), exist_ok=True)
+    with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def schedule_summary() -> dict:
+    job = load_schedule()
+    if not job or not job.get("day"):
+        return {}
+    release = compute_release(job["day"])
+    warm = int(job.get("warm_minutes", 15))
+    return {
+        "day": job["day"],
+        "release": release.isoformat(),
+        "start": (release - timedelta(minutes=warm)).isoformat(),
+        "started": bool(job.get("started")),
+    }
+
+
+def scheduler_loop(backend: Backend) -> None:
+    """定时任务：到放场前 warm_minutes 分钟自动启动真实抢场（book）。"""
+    while True:
+        try:
+            job = load_schedule()
+            if job and job.get("day") and not job.get("started"):
+                release = compute_release(job["day"])
+                warm = timedelta(minutes=int(job.get("warm_minutes", 15)))
+                now = datetime.now(_tz())
+                if now >= release or now >= release - warm:
+                    job["started"] = True
+                    save_schedule(job)
+                    when = (
+                        "放场时间已过，立即"
+                        if now >= release
+                        else f"放场 {release.strftime('%H:%M:%S')} 前预热，自动"
+                    )
+                    backend.append_log(f"[预定] {when}启动真实抢场 {job['day']}\n")
+                    if not backend.run(
+                        ["book", "--day", job["day"]],
+                        {"COURTBOT_OPEN_IN_DEFAULT": "1"},
+                    ):
+                        backend.append_log("[预定] 已有任务运行，本次自动启动跳过\n")
+                        job["started"] = False
+                        save_schedule(job)
+        except Exception as exc:  # noqa: BLE001
+            backend.append_log(f"[预定] 调度异常：{exc}\n")
+        time.sleep(20)
+
+
 class Handler(BaseHTTPRequestHandler):
     backend: Backend = Backend()
 
@@ -285,6 +384,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({
                 "running": self.backend.proc is not None and self.backend.proc.poll() is None,
                 "payUrl": self.backend.pay_url,
+                "schedule": schedule_summary(),
             })
         elif u.path == "/api/log":
             q = parse_qs(u.query)
@@ -336,6 +436,26 @@ class Handler(BaseHTTPRequestHandler):
             self.backend.stop()
             self._json({"ok": True})
             threading.Timer(0.3, shutdown_server).start()
+        elif u.path == "/api/schedule":
+            day = body.get("day", "")
+            if day:
+                save_schedule(
+                    {
+                        "day": day,
+                        "warm_minutes": 15,
+                        "started": False,
+                        "created_at": datetime.now().isoformat(),
+                    }
+                )
+                self._json({"ok": True, "schedule": schedule_summary()})
+            else:
+                self._json({"ok": False, "error": "缺少日期"})
+        elif u.path == "/api/unschedule":
+            try:
+                os.remove(SCHEDULE_FILE)
+            except Exception:
+                pass
+            self._json({"ok": True, "schedule": {}})
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -361,6 +481,7 @@ def main() -> None:
     url = f"http://127.0.0.1:{port}/"
     print(f"抢票助手已启动：{url}")
     threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    threading.Thread(target=scheduler_loop, args=(Handler.backend,), daemon=True).start()
     try:
         SERVER.serve_forever()
     except KeyboardInterrupt:
