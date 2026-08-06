@@ -77,19 +77,52 @@ class Runner:
         s.booking_uri = uri
 
         driver.get(uri)
-        s.api_key = recorder.find_api_key()
-        if not s.api_key:
-            time.sleep(5)
-            s.api_key = recorder.find_api_key()
-        if not s.api_key:
-            raise RuntimeError(
-                "未捕获到 booking.sport.gov.mo 的 api-key 请求头。"
-                "请先运行 `python main.py discover` 确认 security 页面加载流程"
-            )
+        s.api_key = self._capture_valid_api_key(recorder)
         s.fetched_at = time.time()
         self.store.save(s)
         log.info("会话建立完成")
         return s
+
+    def _capture_valid_api_key(self, recorder: FlowRecorder, attempts: int = 4) -> str:
+        """捕获并实测校验 booking api-key。
+
+        浏览器可能先发出旧页面残留的请求（旧 apicode 对应的 key 直连会 401），
+        因此取最新出现的 key，并用 place/list 实测校验；401 则等待刷新后重取。
+        """
+        last_err: Exception | None = None
+        for i in range(attempts):
+            if i:
+                time.sleep(3)
+            key = recorder.find_api_key()
+            if not key:
+                time.sleep(2)
+                key = recorder.find_api_key()
+            if not key:
+                last_err = RuntimeError(
+                    "未捕获到 booking.sport.gov.mo 的 api-key 请求头。"
+                    "请先运行 `python main.py discover` 确认 security 页面加载流程"
+                )
+                continue
+            probe = BookingClient(key)
+            try:
+                probe.place_list(
+                    self.cfg.venue.booking_venue_id, self.cfg.venue.booking_sport_id
+                )
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 401:
+                    log.warning(
+                        "api-key 返回 401（可能是旧页面残留），等待刷新后重取（%d/%d）",
+                        i + 1,
+                        attempts,
+                    )
+                    last_err = exc
+                    continue
+                raise
+            log.info("api-key 校验通过（第 %d 次尝试）", i + 1)
+            return key
+        if isinstance(last_err, requests.HTTPError):
+            raise RuntimeError("未能捕获可用的 booking api-key（多次 401）")
+        raise last_err or RuntimeError("未捕获到 booking api-key")
 
     def _ensure_ready(self, bm: BrowserManager, recorder: FlowRecorder) -> Session:
         """返回有效会话，并保证浏览器已打开一个刚生成的 booking 页面。
@@ -111,13 +144,7 @@ class Runner:
 
             recorder.start()
             bm.driver.get(s.booking_uri)
-            fresh_key = recorder.find_api_key()
-            if not fresh_key:
-                time.sleep(3)
-                fresh_key = recorder.find_api_key()
-            if fresh_key and fresh_key != s.api_key:
-                log.info("api-key 已刷新")
-                s.api_key = fresh_key
+            s.api_key = self._capture_valid_api_key(recorder, attempts=3)
             s.fetched_at = time.time()
             self.store.save(s)
             time.sleep(2)
@@ -262,7 +289,19 @@ class Runner:
 
             if dry_run:
                 log.info("dry-run：仅查询余量，不下单")
-                client.open_time(place_id, day)
+                try:
+                    body = client.open_time(place_id, day)
+                except requests.HTTPError as exc:
+                    if exc.response is not None and exc.response.status_code == 401:
+                        log.warning("open_time 401（api-key 失效），强制重建会话后重试")
+                        s = self.ensure_session(bm.driver, recorder, force=True)
+                        client = BookingClient(
+                            s.api_key, response_dir=self.cfg.state_dir / "responses"
+                        )
+                        body = client.open_time(place_id, day)
+                    else:
+                        raise
+                self._print_availability(body)
                 return
 
             order_id = self._book_via_ui(bm.driver, recorder, day, place_name, time_label)
@@ -305,8 +344,20 @@ class Runner:
         # 3) 选择 07:00-08:00 时段
         if sel.get("time_slot"):
             self._click_by_text(driver, sel["time_slot"])
-        else:
-            self._click_time_slot(driver, time_label)
+        elif not self._click_time_slot(driver, time_label):
+            # 首次失败：重新点日期/场地后重试一次；仍失败则中止，
+            # 避免“时段未选中”状态下点提交（order/start 不会触发，页面看似无滑块）。
+            log.warning("首次选择时段失败，重选日期/场地后重试")
+            self._click_date(driver, day)
+            time.sleep(1)
+            self._click_first_text(
+                driver, [place_name, "羽毛球3號場", "羽毛球3号场"], "选择场地"
+            )
+            time.sleep(1)
+            if not self._click_time_slot(driver, time_label):
+                raise RuntimeError(
+                    f"选择时段失败：{time_label} 在页面未出现或不可选，已中止（避免无效提交）"
+                )
         time.sleep(1)
 
         # 3.5) 勾选“本人已閱讀並同意”条款（提交按钮启用前提）
@@ -498,10 +549,14 @@ class Runner:
         self._safe_click(driver, el)
 
     def _click_date(self, driver, day: str) -> None:
-        """点击日期格（class=date___3gbyJ），避免误点其他含相同文本的元素。"""
+        """点击日期格（class=date___3gbyJ），避免误点其他含相同文本的元素。
+
+        事件绑定在 tabItem 容器上：优先点击容器，并在点击后校验 activeTab 选中态，
+        避免日期点击未生效导致时段列表停留在停用状态。
+        """
         for d in (day[5:], day):
             try:
-                el = WebDriverWait(driver, 6).until(
+                cell = WebDriverWait(driver, 6).until(
                     EC.element_to_be_clickable(
                         (
                             By.XPATH,
@@ -510,8 +565,17 @@ class Runner:
                         )
                     )
                 )
-                self._safe_click(driver, el)
-                log.info("选择目标日期：已点击「%s」", d)
+                target = cell
+                cur = cell
+                for _ in range(3):
+                    parent = cur.find_element(By.XPATH, "..")
+                    if "tabItem" in (parent.get_attribute("class") or ""):
+                        target = parent
+                        break
+                    cur = parent
+                self._safe_click(driver, target)
+                WebDriverWait(driver, 5).until(lambda drv: self._date_selected(drv, d))
+                log.info("选择目标日期：已点击并确认选中「%s」", d)
                 return
             except Exception:  # noqa: BLE001
                 continue
@@ -524,6 +588,17 @@ class Runner:
             except Exception:  # noqa: BLE001
                 continue
         raise RuntimeError(f"选择目标日期失败：未找到 {day}")
+
+    def _date_selected(self, driver, d: str) -> bool:
+        """目标日期对应的 tabItem 是否处于 activeTab 选中态。"""
+        try:
+            cells = driver.find_elements(
+                By.XPATH,
+                f"//*[contains(@class, 'tabItem') and .//*[normalize-space(text())='{d}']]",
+            )
+        except Exception:  # noqa: BLE001
+            return False
+        return any("activeTab" in (c.get_attribute("class") or "") for c in cells)
 
     def _safe_click(self, driver, el) -> None:
         try:
@@ -540,36 +615,61 @@ class Runner:
         )
         self._safe_click(driver, el)
 
-    def _click_time_slot(self, driver, time_label: str) -> None:
-        """点击时段：等待时段列表渲染，优先点所在行（scheduleItem），最多等 30 秒。"""
+    def _click_time_slot(self, driver, time_label: str, timeout: float = 30.0) -> bool:
+        """点击时段；返回是否成功选中。
+
+        scheduleItem 有状态类：stop=停用（日期未生效/时段已过）、select=已选中、
+        error=不可约。只点击非 stop 的项，点击后校验是否进入 select/脱离 stop。
+        """
         start = time_label.split("-")[0]
         variants = [time_label, time_label.replace("-", "~"), start]
-        deadline = time.time() + 30
+        deadline = time.time() + timeout
         while time.time() < deadline:
             for v in variants:
                 try:
-                    el = WebDriverWait(driver, 4).until(
+                    item = WebDriverWait(driver, 3).until(
                         EC.presence_of_element_located(
                             (
                                 By.XPATH,
-                                f"//*[contains(normalize-space(.), '{v}') and not(self::script)]",
+                                f"//*[contains(@class, 'scheduleItem') "
+                                f"and contains(normalize-space(.), '{v}')]",
                             )
                         )
                     )
-                    cur = el
-                    for _ in range(5):
-                        if "scheduleItem" in (cur.get_attribute("class") or ""):
-                            self._safe_click(driver, cur)
-                            log.info("选择时段：已点击「%s」", v)
-                            return
-                        cur = cur.find_element(By.XPATH, "..")
-                    self._safe_click(driver, el)
-                    log.info("选择时段：已点击「%s」", v)
-                    return
                 except Exception:  # noqa: BLE001
                     continue
-            time.sleep(1)
-        log.warning("选择时段失败：%s 时段在 30 秒内未出现", start)
+                state = self._item_state(item)
+                if state == "stop":
+                    continue  # 停用态：日期/场地可能未生效，等下一次循环或由调用方重试
+                if state == "select":
+                    log.info("选择时段：「%s」已选中", v)
+                    return True
+                self._safe_click(driver, item)
+                try:
+                    WebDriverWait(driver, 4).until(
+                        lambda d, it=item: "select" in self._item_state(it)
+                        or "select" in (it.get_attribute("class") or "")
+                    )
+                    log.info("选择时段：已点击「%s」", v)
+                    return True
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "点击「%s」后未进入选中态（state=%s），重试",
+                        v,
+                        self._item_state(item),
+                    )
+            time.sleep(0.5)
+        log.warning("选择时段失败：%s 时段在 %ss 内未出现或不可选", start, timeout)
+        return False
+
+    @staticmethod
+    def _item_state(el) -> str:
+        """从 scheduleItem 的 class 中提取状态（stop/select/error/…），无则空串。"""
+        cls = el.get_attribute("class") or ""
+        for token in cls.split():
+            if token.startswith(("stop", "select", "error", "active", "book")):
+                return token.split("___")[0]
+        return ""
 
     def _check_agreement(self, driver) -> bool:
         """勾选“本人已閱讀並同意”条款（#agreeView），并等待提交按钮启用。"""
@@ -617,9 +717,10 @@ class Runner:
             data = json.loads(body)
         except ValueError:
             raise RuntimeError("order/add 响应不是 JSON，见 state/responses/ 中的原始响应")
-        # TODO(集成): 根据实际响应结构调整字段名
-        for key in ("orderId", "orderNo", "id"):
-            v = data.get("data", {}).get(key) or data.get(key)
+        # 已确认（2026-08-05 HAR）：order/add 返回 {"data":{"number":"IDOB…"}, "code":0}
+        node = data.get("data") if isinstance(data.get("data"), dict) else {}
+        for key in ("number", "orderId", "orderNo", "id"):
+            v = node.get(key) or data.get(key)
             if v:
                 return str(v)
         raise RuntimeError("未能在 order/add 响应中找到订单号，见 state/responses/")

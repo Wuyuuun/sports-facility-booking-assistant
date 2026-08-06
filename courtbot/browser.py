@@ -88,11 +88,14 @@ class FlowRecorder:
 
     def find_api_key(self) -> str:
         self.drain()
+        key = ""
         for r in self._req.values():
-            key = r["headers"].get("api-key") or r["headers"].get("Api-Key")
-            if key:
-                return key
-        return ""
+            k = r["headers"].get("api-key") or r["headers"].get("Api-Key")
+            if k:
+                key = k
+        # 取最后（最新）出现的 key：浏览器恢复旧页面时会先发出带旧 apicode 的请求，
+        # 第一个 key 可能是已失效的，最新一个才是当前会话的。
+        return key
 
     def wait_request(self, url_pattern: str, timeout: float = 60.0) -> dict:
         """等待出现匹配 url_pattern 的请求，返回其 url/method/headers/postData/body。"""
