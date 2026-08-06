@@ -904,6 +904,11 @@ class Runner:
             ctx.newer_than = self.sms_provider.newest_ts()
 
         captcha_resp = client.send_captcha(order_id)
+        if captcha_resp.get("code") != 0:
+            raise RuntimeError(
+                f"发送验证码失败（{captcha_resp.get('message') or captcha_resp}）。"
+                f"订单 {order_id} 已创建但未付款，请先「取消订单」释放场地"
+            )
         self.notifier.notify("验证码已发送", "请查收手机短信")
         code = self.sms_provider.get_code(ctx)
 
