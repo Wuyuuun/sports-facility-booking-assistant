@@ -53,15 +53,7 @@ class VenueClient:
         raise last
 
     def _get_booking_uri_once(self, venue_code: str) -> str:
-
-        home = self.s.get(
-            "https://venue.mo.gov.mo/venue-rental/web-page-home"
-            "?accountType=Personal&hasDept=True&language=zh-Hant",
-            timeout=20,
-        )
-        log.info("场馆预约首页状态: %s", home.status_code)
-
-
+        # 实测可跳过场馆首页 GET（省 ~1.3 秒），直接申请 apicode 即可
         r = self.s.post(
             f"{VENUE_API}/id/applications/{venue_code}",
             json={},

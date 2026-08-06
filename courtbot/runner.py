@@ -147,7 +147,6 @@ class Runner:
             s.api_key = self._capture_valid_api_key(recorder, attempts=3)
             s.fetched_at = time.time()
             self.store.save(s)
-            time.sleep(2)
             return s
 
         s = self.ensure_session(bm.driver, recorder)
