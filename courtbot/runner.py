@@ -397,6 +397,14 @@ class Runner:
                     continue
         req = captcha.wait_order_add(recorder, timeout=180)
         recorder.save_body("order_add", req.get("body", ""))
+        post = req.get("postData", "")
+        if "trerror_" in post:
+            # 滑块未拖动/加载失败时腾讯会返回 trerror 错误票据，
+            # 前端仍会发 order/add，但服务器不会创建订单（响应体为空）。
+            raise RuntimeError(
+                "滑块验证未通过：order/add 携带腾讯错误票据（trerror），订单未创建。"
+                "通常为滑块资源加载失败或未拖动，请重试并在滑块出现时拖动"
+            )
         return self._extract_order_id(req.get("body", ""))
 
     def _wait_for_booking_widget(self, driver, place_name: str) -> None:
@@ -716,7 +724,10 @@ class Runner:
         try:
             data = json.loads(body)
         except ValueError:
-            raise RuntimeError("order/add 响应不是 JSON，见 state/responses/ 中的原始响应")
+            raise RuntimeError(
+                "order/add 响应不是 JSON（订单可能未创建，如滑块票据无效），"
+                "原始响应见 state/captures/"
+            )
         # 已确认（2026-08-05 HAR）：order/add 返回 {"data":{"number":"IDOB…"}, "code":0}
         node = data.get("data") if isinstance(data.get("data"), dict) else {}
         for key in ("number", "orderId", "orderNo", "id"):
