@@ -38,7 +38,7 @@ class VenueConfig:
 
 @dataclass
 class BookingConfig:
-    release_time: str = "08:00:00"
+    release_time: str = "07:30:00"
     offset_days: int = 3
     time_key: str = "0700"
     time_label: str = "07:00-08:00"

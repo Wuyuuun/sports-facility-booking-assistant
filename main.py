@@ -4,12 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import signal
 import sys
 
 from courtbot.browser import BrowserManager
 from courtbot.config import load_config
 from courtbot.logger import setup_logging
 from courtbot.runner import Runner
+
+
+def _handle_sigterm(signum, frame):
+    """GUI「停止」/外部 kill 时优雅退出：让 with BrowserManager 释放浏览器。"""
+    log = logging.getLogger("courtbot")
+    log.warning("收到终止信号（SIGTERM），正在退出并释放浏览器……")
+    raise KeyboardInterrupt
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +60,7 @@ def main() -> int:
     if args.fresh:
         cfg.browser.fresh_profile = True
     log = setup_logging(cfg.state_dir)
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     runner = Runner(cfg)
 
     try:
@@ -83,6 +93,9 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         log.exception("执行失败: %s", exc)
         return 1
+    except KeyboardInterrupt:
+        log.info("已退出")
+        return 130
 
 
 if __name__ == "__main__":

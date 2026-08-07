@@ -188,23 +188,12 @@ class Runner:
             if release <= datetime.now(tz):
                 log.warning("目标日期 %s 的放场时间已过，直接尝试抢场", day)
                 return False
-            log.info("放场时间: %s", release.isoformat())
-            while True:
-                now = datetime.now(tz)
-                if now >= release:
-                    log.info("放场时间到")
-                    return True
-                delta = (release - now).total_seconds()
-                if delta > 30:
-                    time.sleep(5)
-                elif delta > 1:
-                    time.sleep(0.05)
-                else:
-                    time.sleep(0.005)
-            return
+            return self._sleep_until(release)
+        return self._sleep_until(self.next_release())
 
-        release = self.next_release()
-        log.info("下一次放场时间: %s", release.isoformat())
+    def _sleep_until(self, release: datetime) -> bool:
+        """精确睡眠到 release 时刻；返回是否真的等过。"""
+        log.info("放场时间: %s", release.isoformat())
         while True:
             now = datetime.now(self._tz())
             if now >= release:
@@ -424,6 +413,11 @@ class Runner:
             # 提前预热页面等放场时：放场瞬间刷新页面，让目标日期进入可选范围
             if waited:
                 self._refresh_booking_page(bm.driver, recorder, s, place_name, day)
+                # 刷新预约页后 SPA 可能换了 api-key：用最新会话重建客户端，
+                # 避免后续支付请求仍带旧 key 返回 401
+                client = BookingClient(
+                    s.api_key, response_dir=self.cfg.state_dir / "responses"
+                )
 
             order_id = self._book_via_ui(
                 bm.driver, recorder, day, place_name, time_label, submit=not rehearsal
@@ -469,8 +463,12 @@ class Runner:
                 time.sleep(1.5)
         if not refreshed:
             log.warning("15 秒内目标日期未出现，继续尝试抢场（_click_date 仍会等待）")
-        # 刷新后 SPA 可能换了 api-key，重新捕获
-        s.api_key = self._capture_valid_api_key(recorder, attempts=3)
+        # 刷新后 SPA 可能换了 api-key，重新捕获；失败不致命——
+        # UI 抢场用的是浏览器自己的请求，旧 key 仍可能在会话内有效。
+        try:
+            s.api_key = self._capture_valid_api_key(recorder, attempts=3)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("刷新后重新捕获 api-key 失败（%s），继续使用原 key", exc)
         s.fetched_at = time.time()
         self.store.save(s)
 
@@ -958,9 +956,9 @@ class Runner:
             webbrowser.open(pay_url)
         else:
             driver.get(pay_url)
-        self.notifier.notify("请扫码支付", "请用 MPay 扫描二维码完成支付")
-
-        # TODO(集成): 确认 payment/start 返回的 BOC token 字段，再启用自动轮询
+        # 进入支付页面即代表场地已暂时锁定（订单已创建、验证码已核验），
+        # 后续扫码支付由人工完成，脚本到此结束。
+        self.notifier.notify("已进入支付页面", "场地已暂时锁定，请用 MPay 扫码完成支付")
 
     # ---------- 集成辅助 ----------
     def discover(self) -> None:

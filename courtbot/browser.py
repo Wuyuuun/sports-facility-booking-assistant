@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import select
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -246,16 +248,40 @@ class BrowserManager:
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
         try:
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=opts)
+            driver_binary = ChromeDriverManager().install()
         except Exception as exc:  # noqa: BLE001
+            log.error("ChromeDriver 安装/查找失败: %s", exc)
+            raise
+
+        # profile 被残留进程占用时 Chrome 启动会失败；自动等待旧进程
+        # 退出（如 keep_open 等待回车但窗口已关）后重试。
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                self.driver = webdriver.Chrome(
+                    service=Service(driver_binary), options=opts
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < 3:
+                    log.warning(
+                        "浏览器启动失败（第 %d/3 次）: %s。"
+                        "若上一次运行的进程尚未退出（keep_open 等待回车/窗口未关/进程被杀），"
+                        "正在等待其释放 profile（%s）后重试……",
+                        attempt,
+                        exc,
+                        profile,
+                    )
+                    time.sleep(10)
+        if self.driver is None:
             log.error(
-                "浏览器启动失败（%s）。若上次运行 keep_open=true 后未关闭浏览器，"
-                "请先关闭残留的 Chrome 窗口（占用 %s）再重试",
-                exc,
+                "浏览器启动失败: %s。若仍有残留进程占用 profile（%s），"
+                "请关闭旧浏览器窗口，或结束旧的抢场进程后重试",
+                last_exc,
                 profile,
             )
-            raise
+            raise last_exc
         self.driver.set_window_size(1440, 960)
         captures_dir = self.cfg.state_dir / "captures"
         captures_dir.mkdir(parents=True, exist_ok=True)
@@ -266,6 +292,45 @@ class BrowserManager:
     def recorder(self) -> FlowRecorder:
         return self._recorder
 
+    def _browser_open(self) -> bool:
+        """浏览器窗口是否仍打开；用户手动关闭窗口后返回 False。"""
+        if not self.driver:
+            return False
+        try:
+            return bool(self.driver.window_handles)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _wait_keep_open(self) -> None:
+        """keep_open：等待人工完成查看/支付。
+
+        交互式终端：按回车立即结束；用户直接关闭浏览器窗口也会自动结束，
+        避免进程一直占着 profile，导致下一次启动报错。
+        非交互（GUI 子进程 stdin=DEVNULL）：维持原行为立即结束，不阻塞任务。
+        """
+        log.info(
+            "keep_open=true：浏览器窗口保持打开。完成查看/支付后"
+            "关闭浏览器窗口即自动结束进程，或回到本终端按回车结束"
+        )
+        stdin = sys.stdin
+        interactive = bool(stdin) and not stdin.closed and stdin.isatty()
+        if not interactive:
+            return
+        while True:
+            try:
+                ready, _, _ = select.select([stdin], [], [], 0.5)
+            except (OSError, ValueError):
+                return
+            if ready:
+                try:
+                    stdin.readline()
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            if not self._browser_open():
+                log.info("检测到浏览器窗口已关闭，自动结束进程")
+                return
+
     def stop(self) -> None:
         if self.driver:
             if self._recorder:
@@ -274,14 +339,10 @@ class BrowserManager:
                 except Exception:  # noqa: BLE001
                     log.debug("保存运行 HAR 失败", exc_info=True)
             if self.cfg.browser.keep_open:
-                log.info(
-                    "keep_open=true：浏览器窗口保持打开。完成查看/支付后："
-                    "① 关闭浏览器窗口 ② 回到本终端按回车结束进程"
-                )
                 try:
-                    input()
-                except (EOFError, KeyboardInterrupt):
-                    pass
+                    self._wait_keep_open()
+                except KeyboardInterrupt:
+                    log.info("收到中断，结束 keep_open 等待")
             try:
                 self.driver.quit()
             except Exception:  # noqa: BLE001

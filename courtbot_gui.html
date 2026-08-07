@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<title>抢票助手</title>
+<style>
+  body { font-family: -apple-system, "PingFang TC", sans-serif; margin: 20px; background:#f5f6f8; }
+  h1 { font-size: 20px; margin: 0 0 10px; }
+  .card { background:#fff; border-radius:10px; padding:14px 16px; margin-bottom:12px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  label { font-size:13px; color:#555; margin-right:4px; }
+  select { font-size:14px; padding:4px 6px; border:1px solid #ccc; border-radius:6px; min-width:130px; }
+  button { font-size:15px; padding:8px 18px; margin:4px 6px 4px 0; border:none; border-radius:8px; cursor:pointer; }
+  .primary { background:#1a73e8; color:#fff; }
+  .danger  { background:#d93025; color:#fff; }
+  .gray    { background:#e4e6ea; color:#333; }
+  .green   { background:#188038; color:#fff; }
+  #sel { font-size:13px; color:#333; margin-top:8px; }
+  #log { background:#111; color:#9fe09f; font:12px/1.5 Menlo,monospace; height:280px; overflow:auto; padding:10px; border-radius:8px; white-space:pre-wrap; }
+  #status { font-size:13px; color:#666; margin-top:6px; }
+</style></head><body>
+<h1>🏸 抢票助手</h1>
+<div class="card">
+  <label>日期</label><select id="day"></select>
+  <label>场地</label><select id="place"></select>
+  <label>时段</label><select id="time"></select>
+  <button class="gray" onclick="loadOptions()">刷新列表</button>
+  <button class="primary" onclick="saveSel()">保存选择</button>
+  <div id="sel">当前选择：未加载</div>
+</div>
+<div class="card">
+  <button class="gray" onclick="run('check')">查余量</button>
+  <button class="gray" onclick="run('rehearsal')">演练</button>
+  <button class="primary" onclick="run('book')">抢场</button>
+  <button class="danger" onclick="run('cancel')">取消订单</button>
+  <button class="gray" onclick="stop()">停止</button>
+  <button class="green" id="paybtn" onclick="openPay()" disabled>打开支付页</button>
+  <button class="primary" onclick="schedule()">预定</button>
+  <button class="gray" onclick="unschedule()">取消预定</button>
+  <button class="gray" onclick="quit()">退出程序</button>
+  <div id="status">就绪</div>
+  <div id="sched">未预定</div>
+</div>
+<div class="card"><div id="log">等待日志…</div></div>
+<script>
+let seq = 0;
+let opts = {dayRanges:[], places:[], times:[], selection:{}};
+
+async function api(url, method, body) {
+  const r = await fetch(url, {method: method || 'GET', headers:{'Content-Type':'application/json'},
+                              body: body ? JSON.stringify(body) : undefined});
+  return r.json();
+}
+function fill(sel, values) { sel.innerHTML = ''; values.forEach(v => { const o = document.createElement('option'); o.value = v; o.text = v; sel.appendChild(o); }); }
+
+async function loadOptions() {
+  const d = document.getElementById('day').value || '';
+  opts = await api('/api/options' + (d ? '?day=' + encodeURIComponent(d) : ''));
+  fill(document.getElementById('day'), opts.dayRanges || []);
+  fill(document.getElementById('place'), (opts.places||[]).map(p => p.title));
+  const tsel = document.getElementById('time');
+  tsel.innerHTML = '';
+  (opts.times||[]).forEach(t => {
+    const o = document.createElement('option');
+    o.value = t.timeFrom + '-' + t.timeTo;
+    o.text = o.value + (t.isCanBook ? '' : '（不可约）');
+    tsel.appendChild(o);
+  });
+  if (!tsel.options.length) {
+    const o = document.createElement('option');
+    o.value = '07:00-08:00';
+    o.text = '07:00-08:00';
+    tsel.appendChild(o);
+  }
+  const sel = opts.selection || {};
+  if (sel.day) document.getElementById('day').value = sel.day;
+  if (sel.place_name) document.getElementById('place').value = sel.place_name;
+  if (sel.time_label) {
+    [...tsel.options].forEach(o => { if (o.value.startsWith(sel.time_label)) tsel.value = o.value; });
+  }
+  document.getElementById('sel').textContent = '当前选择：' + (sel.place_name||'') + '｜' + (sel.day||'') + '｜' + (sel.time_label||'');
+}
+
+async function saveSel() {
+  const r = await api('/api/save', 'POST', {day: document.getElementById('day').value,
+    placeTitle: document.getElementById('place').value,
+    timeText: document.getElementById('time').value});
+  document.getElementById('sel').textContent = '当前选择：' + document.getElementById('place').value +
+    '｜' + document.getElementById('day').value + '｜' + document.getElementById('time').value;
+  log('选择已保存\n');
+}
+
+async function run(cmd) {
+  const r = await api('/api/run', 'POST', {cmd, day: document.getElementById('day').value});
+  if (!r.ok) log('已有任务运行中，请先点「停止」\n');
+  document.getElementById('status').textContent = '运行中…';
+}
+async function stop() { await api('/api/stop', 'POST', {}); }
+async function openPay() {
+  const r = await api('/api/payurl');
+  if (r.payUrl) { window.open(r.payUrl, '_blank'); }
+}
+function log(t) {
+  const el = document.getElementById('log');
+  el.textContent += t;
+  el.scrollTop = el.scrollHeight;
+}
+async function safeApi(url, method, body) {
+  try {
+    return await api(url, method, body);
+  } catch (e) {
+    log('请求失败：' + e + '\n');
+    return {};
+  }
+}
+async function poll() {
+  const r = await safeApi('/api/log?since=' + seq);
+  seq = r.seq;
+  (r.lines||[]).forEach(l => log(l));
+  const st = await safeApi('/api/state');
+  document.getElementById('status').textContent = st.running ? '运行中…' : '就绪';
+  document.getElementById('paybtn').disabled = !st.payUrl;
+  const sch = st.schedule || {};
+  document.getElementById('sched').textContent = sch.day
+    ? ('预定：' + sch.day + '｜放场 ' + (sch.release||'').replace('T',' ') + '｜' + (sch.started ? '已自动启动' : (sch.start||'').replace('T',' ') + ' 自动启动'))
+    : '未预定';
+  setTimeout(poll, 600);
+}
+async function quit() {
+  if (confirm('确定退出抢票助手？')) { await safeApi('/api/quit', 'POST', {}); }
+}
+async function schedule() {
+  const day = document.getElementById('day').value;
+  const r = await safeApi('/api/schedule', 'POST', {day});
+  log(r.ok ? ('已预定：' + day + '（放场前自动真抢）\n') : '预定失败\n');
+}
+async function unschedule() {
+  await safeApi('/api/unschedule', 'POST', {});
+  log('已取消预定\n');
+}
+loadOptions();
+poll();
+</script></body></html>

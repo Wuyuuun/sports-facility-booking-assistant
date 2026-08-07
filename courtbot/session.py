@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 
@@ -32,7 +32,8 @@ class SessionStore:
             return Session()
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            return Session(**data)
+            names = {f.name for f in fields(Session)}
+            return Session(**{k: v for k, v in data.items() if k in names})
         except Exception:
             return Session()
 
