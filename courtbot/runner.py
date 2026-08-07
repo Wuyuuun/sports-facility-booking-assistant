@@ -280,6 +280,7 @@ class Runner:
                         sel.place_id or self.cfg.venue.place_id, day
                     ).get("data") or {}).get("openTimes") or []
                 )
+                times = [self._normalize_time(t) for t in times]
                 break
             except requests.HTTPError as exc:
                 if exc.response is not None and exc.response.status_code == 401 and attempt == 0:
@@ -316,6 +317,19 @@ class Runner:
         }
         print(json.dumps(out, ensure_ascii=False))
         return out
+
+    @staticmethod
+    def _normalize_time(t: dict) -> dict:
+        """站点偶发时段显示错位（如 timeKey=1600 却显示 15:00-17:00），
+        以 timeKey 为准修正展示的 timeFrom/timeTo。"""
+        key = str(t.get("timeKey") or "")
+        if len(key) == 4 and key.isdigit():
+            hh = int(key[:2])
+            if t.get("timeFrom") != f"{hh:02d}:00":
+                t = dict(t)
+                t["timeFrom"] = f"{hh:02d}:00"
+                t["timeTo"] = f"{hh + 1:02d}:00"
+        return t
 
     def cancel_order(self, order_id: str | None = None) -> None:
         """取消待付款订单；不传订单号则自动取消当前 Lock 的订单。"""
@@ -360,6 +374,7 @@ class Runner:
             log.info("（无场次数据）")
             return
         for t in sorted(times, key=lambda x: x.get("timeKey", "")):
+            t = self._normalize_time(t)
             log.info(
                 "%s-%s  status=%-8s canBook=%s  price=%s",
                 t.get("timeFrom"),

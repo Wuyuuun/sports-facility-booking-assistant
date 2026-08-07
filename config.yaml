@@ -19,7 +19,7 @@ venue:
   sport: 1
 
 booking:
-  release_time: "08:00:00"      # 放场时间（提前 offset_days 天的早上 8 点）
+  release_time: "07:30:00"      # 放场时间（已确认为早上 7:30）
   offset_days: 3                # 提前 3 天放场
   time_key: "0700"              # 目标场次 07:00-08:00（timeKey 来自 HAR）
   time_label: "07:00-08:00"
